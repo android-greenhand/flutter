@@ -3,21 +3,16 @@ import 'package:go_router/go_router.dart';
 import '../services/unified_article_service.dart';
 import '../models/unified_article.dart';
 import '../widgets/page_container.dart';
-// import 'dart:developer' as dev;
-import '../pages/custom_log.dart' as dev;
+import 'dart:developer' as dev;
 
 class CategorizedArticlePage extends StatefulWidget {
   const CategorizedArticlePage({super.key});
 
   @override
-  State<CategorizedArticlePage> createState() {
-    dev.log('创建CategorizedArticlePage的State', name: 'CategorizedArticlePage');
-    return _CategorizedArticlePageState();
-  }
+  State<CategorizedArticlePage> createState() => _CategorizedArticlePageState();
 }
 
 class _CategorizedArticlePageState extends State<CategorizedArticlePage> {
-  static const String _logName = 'CategorizedArticlePage';
   List<ArticleCategory>? _categories;
   String? _error;
   bool _isLoading = true;
@@ -25,58 +20,26 @@ class _CategorizedArticlePageState extends State<CategorizedArticlePage> {
   @override
   void initState() {
     super.initState();
-    dev.log('CategorizedArticlePage - initState开始', name: _logName);
-    dev.log('当前Context: ${context.toString()}', name: _logName);
-    
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      dev.log('Widget完成首次构建', name: _logName);
-      dev.log('当前路由: ${GoRouterState.of(context).uri.path}', name: _logName);
-      _loadCategories();
-    });
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    dev.log('CategorizedArticlePage - didChangeDependencies被调用', name: _logName);
-  }
-
-  @override
-  void dispose() {
-    dev.log('CategorizedArticlePage - dispose被调用', name: _logName);
-    super.dispose();
+    _loadCategories();
   }
 
   Future<void> _loadCategories() async {
-    dev.log('准备加载分类数据...', name: _logName);
-    
     try {
-      dev.log('设置加载状态...', name: _logName);
       setState(() {
         _isLoading = true;
         _error = null;
       });
-      
-      dev.log('开始调用UnifiedArticleService.getCategorizedArticles()', name: _logName);
+
       final categories = await UnifiedArticleService.getCategorizedArticles();
-      dev.log('成功获取分类数据: ${categories.length} 个分类', name: _logName);
-      
+
       if (mounted) {
-        dev.log('更新UI状态 - mounted: true', name: _logName);
         setState(() {
           _categories = categories;
           _isLoading = false;
         });
-      } else {
-        dev.log('Widget已经被销毁，不更新状态', name: _logName);
       }
     } catch (e, stack) {
-      dev.log(
-        '加载分类失败',
-        name: _logName,
-        error: e,
-        stackTrace: stack,
-      );
+      dev.log('加载分类失败', name: 'CategorizedArticlePage', error: e, stackTrace: stack);
       if (mounted) {
         setState(() {
           _error = e.toString();

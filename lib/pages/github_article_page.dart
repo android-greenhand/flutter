@@ -1,7 +1,7 @@
 import 'dart:developer' as dev;
 
 import 'package:flutter/material.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import '../services/unified_article_service.dart';
 import '../widgets/page_container.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -96,34 +96,25 @@ class _GitHubArticlePageState extends State<GitHubArticlePage> {
 
   Future<void> _loadContent() async {
     try {
-      print('🔄 [GitHubArticlePage] 开始加载内容');
-      print('  - 仓库: ${widget.owner}/${widget.repo}');
-      print('  - 路径: ${widget.path}');
-      
       final content = await UnifiedArticleService.getMarkdownContent(
         widget.owner,
         widget.repo,
         widget.path,
       );
-      
-      // 获取文章的提交信息
+
       final commitInfo = await UnifiedArticleService.getFileCommitInfo(
         widget.owner,
         widget.repo,
         widget.path,
       );
-      
+
       if (commitInfo != null) {
         _lastUpdated = DateTime.parse(commitInfo['date'] as String);
         _authorName = commitInfo['author'] as String;
       }
-      
-      print('✅ [GitHubArticlePage] 内容加载成功');
-      print('  - 内容长度: ${content.length} 字符');
-      print('  - 内容预览: ${content.substring(0, min(100, content.length))}...');
-      
+
       _extractHeadings(content);
-      
+
       if (mounted) {
         setState(() {
           _content = content;
@@ -131,10 +122,7 @@ class _GitHubArticlePageState extends State<GitHubArticlePage> {
         });
       }
     } catch (e) {
-      print('❌ [GitHubArticlePage] 内容加载失败');
-      print('  - 错误类型: ${e.runtimeType}');
-      print('  - 错误信息: ${e}');
-      
+      dev.log('内容加载失败', name: 'GitHubArticlePage', error: e);
       if (mounted) {
         setState(() {
           _error = e.toString();
@@ -619,49 +607,35 @@ class _GitHubArticlePageState extends State<GitHubArticlePage> {
     );
   }
 
-  // 合并两个异步步骤
   Future<String> _getFinalImageUrl(String uri) async {
-    
-    // 处理相对路径的图片链接
     String imageUrl = uri.toString();
-    print('原始图片链接: $imageUrl');
     String targetPath = '';
-    // 检查是否为相对路径或者指定的资源路径
+
     if (imageUrl.startsWith('../') || imageUrl.startsWith('./') || imageUrl.startsWith('@')) {
-      // 处理普通的相对路径
-      // 移除开头的 ../ 或 ./
       String relativePath = imageUrl;
       if (imageUrl.startsWith('../')) {
         relativePath = imageUrl.substring(3);
       } else if (imageUrl.startsWith('./')) {
         relativePath = imageUrl.substring(2);
       }
-      
-      // 确定仓库的基础路径
-      final String basePath = widget.path.contains('/') 
+
+      final String basePath = widget.path.contains('/')
           ? widget.path.substring(0, widget.path.lastIndexOf('/'))
           : '';
-      
-      // 如果是 ../assets/ 这样的路径，需要处理路径层级
+
       if (imageUrl.startsWith('../')) {
-        // 上一级目录
         if (basePath.contains('/')) {
-          targetPath = basePath.substring(0, basePath.lastIndexOf('/')) + '/' + relativePath;
+          targetPath = '${basePath.substring(0, basePath.lastIndexOf('/'))}/$relativePath';
         } else {
           targetPath = relativePath;
         }
       } else {
-        // 当前目录
         targetPath = basePath.isEmpty ? relativePath : '$basePath/$relativePath';
       }
-      print('转换后的图片链接: $uri -> $targetPath');      
     } else if (imageUrl.contains('github.com') && imageUrl.contains('/blob/')) {
-      // 处理完整的GitHub blob URL，转换为raw URL以直接访问内容
       imageUrl = imageUrl.replaceAll('/blob/', '/raw/');
-      print('转换GitHub blob URL为raw URL: $imageUrl');
     }
     return await UnifiedArticleService.getImageContent(targetPath);
-
   }
 
   Widget _buildArticleContent() {
@@ -847,7 +821,7 @@ class _GitHubArticlePageState extends State<GitHubArticlePage> {
             try {
               launchUrl(Uri.parse(href), mode: LaunchMode.externalApplication);
             } catch (e) {
-              print('无法打开链接: $href');
+              dev.log('无法打开链接: $href', name: 'GitHubArticlePage', error: e);
             }
           }
         },
@@ -858,11 +832,11 @@ class _GitHubArticlePageState extends State<GitHubArticlePage> {
           ],
         ),
         builders: {
-          'code': CodeBlockBuilder(_theme),
+          'pre': CodeBlockBuilder(_theme),
+          'code': InlineCodeBuilder(_theme),
           'blockquote': QuoteBuilder(_theme),
           'table': CustomTableBuilder(_theme),
           'checkbox': CheckboxBuilder(_theme),
-          'inlineCode': InlineCodeBuilder(_theme),
         },
         imageBuilder: (uri, title, alt) {
           return Builder(
@@ -941,7 +915,7 @@ class _GitHubArticlePageState extends State<GitHubArticlePage> {
                                             );
                                           },
                                           imageErrorBuilder: (context, error, stackTrace) {
-                                            print('全屏图片加载错误: $error, URI: $imageUrl');
+                                            dev.log('全屏图片加载错误', name: 'GitHubArticlePage', error: error);
                                             return Container(
                                               padding: const EdgeInsets.all(16),
                                               decoration: BoxDecoration(
@@ -1044,7 +1018,7 @@ class _GitHubArticlePageState extends State<GitHubArticlePage> {
                                     child: FadeInImage.assetNetwork(
                                       placeholder: 'assets/placeholder.png',
                                       imageErrorBuilder: (context, error, stackTrace) {
-                                        print('图片缩略图加载错误: $error, URI: $imageUrl, 错误: ${error.toString()} ,stackTrace:$stackTrace');
+                                        dev.log('图片缩略图加载错误', name: 'GitHubArticlePage', error: error);
                                         return Container(
                                           padding: const EdgeInsets.all(16),
                                           width: double.infinity,
@@ -1147,7 +1121,7 @@ class _GitHubArticlePageState extends State<GitHubArticlePage> {
                                                       );
                                                     },
                                                     imageErrorBuilder: (context, error, stackTrace) {
-                                                      print('全屏图片加载错误: $error, URI: $imageUrl,$stackTrace');
+                                                      dev.log('全屏图片加载错误', name: 'GitHubArticlePage', error: error);
                                                       return Container(
                                                         padding: const EdgeInsets.all(16),
                                                         decoration: BoxDecoration(
@@ -1568,8 +1542,7 @@ class CodeBlockBuilder extends MarkdownElementBuilder {
         language = className.substring(9);
       }
     }
-    
-    print('element:${element} language $language code $code');
+
     // 语法高亮实现
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 16),
@@ -2055,99 +2028,45 @@ class QuoteBuilder extends MarkdownElementBuilder {
 // 自定义表格构建器
 class CustomTableBuilder extends MarkdownElementBuilder {
   final ThemeData theme;
-  
+
   CustomTableBuilder(this.theme);
-  
+
   @override
   Widget visitElementAfter(md.Element element, TextStyle? preferredStyle) {
     final rows = element.children ?? [];
-    
     if (rows.isEmpty) return const SizedBox.shrink();
-    
-    // 检查是否有表头 - 修复为检查类型或内容来判断表头
-    final hasHeader = rows.isNotEmpty && (rows.first.textContent.contains('th>') || rows.length > 1);
-    
-    // 将Markdown元素转换为表格行和单元格
-    final tableRows = <TableRow>[];
-    
-    // 首先处理表头
-    if (hasHeader) {
-      final headerRow = rows.first;
-      // 获取单元格 - 修复为直接使用内容分割或获取节点
-      final headerCells = rows.first is md.Element ? (rows.first as md.Element).children ?? [] : [];
-      
-      tableRows.add(
-        TableRow(
-          decoration: BoxDecoration(
-            color: theme.colorScheme.surfaceVariant.withOpacity(0.5),
-          ),
-          children: headerCells.map((cell) {
-            final text = cell.textContent;
-            return Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Text(
-                text,
-                style: theme.textTheme.titleSmall?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: theme.colorScheme.onSurface,
-                ),
-                textAlign: TextAlign.center,
-              ),
-            );
-          }).toList(),
-        ),
-      );
+
+    // 计算最大列数，确保所有行有相同数量的单元格
+    int maxColumns = 0;
+    for (final row in rows) {
+      if (row is md.Element) {
+        final cellCount = row.children?.length ?? 0;
+        if (cellCount > maxColumns) maxColumns = cellCount;
+      }
     }
-    
-    // 然后处理表格主体
+    if (maxColumns == 0) return const SizedBox.shrink();
+
+    final tableRows = <TableRow>[];
+    final hasHeader = rows.length > 1;
+
+    // 处理表头
+    if (hasHeader && rows.first is md.Element) {
+      final headerCells = (rows.first as md.Element).children ?? [];
+      tableRows.add(_buildTableRow(headerCells, maxColumns, isHeader: true, rowIndex: 0));
+    }
+
+    // 处理表格主体
     final bodyRows = hasHeader ? rows.sublist(1) : rows;
-    
     for (int i = 0; i < bodyRows.length; i++) {
       final row = bodyRows[i];
-      // 获取单元格 - 修复为直接使用内容分割或获取节点
-      final cells = row is md.Element ? (row as md.Element).children ?? [] : [];
-      
-      tableRows.add(
-        TableRow(
-          decoration: BoxDecoration(
-            color: i % 2 == 0 
-                ? theme.colorScheme.surface 
-                : theme.colorScheme.surfaceVariant.withOpacity(0.2),
-          ),
-          children: cells.map((cell) {
-            return Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              child: MarkdownBody(
-                data: cell.textContent,
-                selectable: true,
-                shrinkWrap: true,
-                softLineBreak: true, // 确保文本自动换行
-                fitContent: true, // 适应宽度
-                styleSheet: MarkdownStyleSheet(
-                  p: theme.textTheme.bodyMedium?.copyWith(
-                    height: 1.5,
-                    color: theme.colorScheme.onSurface.withOpacity(0.9),
-                  ),
-                  a: TextStyle(
-                    color: theme.colorScheme.primary,
-                    decoration: TextDecoration.underline,
-                  ),
-                  strong: TextStyle(
-                    fontWeight: FontWeight.w700,
-                    color: theme.colorScheme.onSurface,
-                  ),
-                  em: TextStyle(
-                    fontStyle: FontStyle.italic,
-                    color: theme.colorScheme.onSurface.withOpacity(0.85),
-                  ),
-                ),
-              ),
-            );
-          }).toList(),
-        ),
-      );
+      if (row is md.Element) {
+        final cells = row.children ?? [];
+        tableRows.add(_buildTableRow(cells, maxColumns, isHeader: false, rowIndex: i));
+      }
     }
-    
+
+    if (tableRows.isEmpty) return const SizedBox.shrink();
+
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 16),
       decoration: BoxDecoration(
@@ -2185,6 +2104,60 @@ class CustomTableBuilder extends MarkdownElementBuilder {
           ),
         ),
       ),
+    );
+  }
+
+  TableRow _buildTableRow(List<md.Node> cells, int maxColumns, {required bool isHeader, required int rowIndex}) {
+    final List<Widget> cellWidgets = [];
+
+    // 添加现有单元格
+    for (final cell in cells) {
+      cellWidgets.add(_buildCell(cell, isHeader: isHeader));
+    }
+
+    // 填充缺少的单元格以确保行长度一致
+    while (cellWidgets.length < maxColumns) {
+      cellWidgets.add(_buildEmptyCell(isHeader: isHeader));
+    }
+
+    return TableRow(
+      decoration: BoxDecoration(
+        color: isHeader
+            ? theme.colorScheme.primaryContainer.withOpacity(0.3)
+            : (rowIndex % 2 == 0
+                ? Colors.transparent
+                : theme.colorScheme.surfaceVariant.withOpacity(0.3)),
+      ),
+      children: cellWidgets,
+    );
+  }
+
+  Widget _buildCell(md.Node cell, {required bool isHeader}) {
+    String text = '';
+    if (cell is md.Element) {
+      text = cell.textContent;
+    } else {
+      text = cell.textContent;
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Text(
+        text,
+        style: theme.textTheme.bodyMedium?.copyWith(
+          fontWeight: isHeader ? FontWeight.w600 : FontWeight.normal,
+          color: isHeader
+              ? theme.colorScheme.onPrimaryContainer
+              : theme.colorScheme.onSurface,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmptyCell({required bool isHeader}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: const Text(''),
     );
   }
 }

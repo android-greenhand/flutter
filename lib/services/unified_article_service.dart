@@ -1,86 +1,163 @@
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'dart:math';
 import 'dart:developer' as dev;
 import '../models/unified_article.dart';
 
-/// 统一的文章服务类，使用 UnifiedArticle 模型
+/// 统一的文章服务类，带缓存支持
 class UnifiedArticleService {
-  // 仓库配置
   static const String owner = 'android-greenhand';
   static const String repo = 'Logseq';
   static const String contentsPath = 'pages/contents.md';
-  // static const String contentsPath = 'logseq/bak/pages/contents/2024-06-28T09_33_18.708Z.Desktop.md';
-  
-  // 修改为 Vercel 代理服务地址
   static const String _baseUrl = 'https://ktor-vercel.vercel.app';
+  static const Map<String, String> _headers = {'Accept': 'application/json'};
 
-  // 简化的 headers，不需要 GitHub token
-  static Map<String, String> get _headers => {
-    'Accept': 'application/json',
-  };
+  // ============ 缓存 ============
+  static List<UnifiedArticle>? _articlesCache;
+  static Set<String>? _existingFilesCache;
+  static String? _contentsCache;
+  static DateTime? _cacheTime;
+  static const Duration _cacheDuration = Duration(minutes: 10);
 
-  /// 获取文章列表，返回 UnifiedArticle 类型
-  static Future<List<UnifiedArticle>> getArticleList(String owner, String repo, String path) async {
-    final url = Uri.parse('$_baseUrl/api/contents/$path?owner=$owner&repo=$repo');
-    dev.log('正在请求文章列表...');
-    dev.log('请求 URL: ${url.toString()}');
-    dev.log('请求头: ${_headers.toString()}');
+  /// 清除所有缓存
+  static void clearCache() {
+    _articlesCache = null;
+    _existingFilesCache = null;
+    _contentsCache = null;
+    _cacheTime = null;
+  }
+
+  static bool get _isCacheValid {
+    if (_cacheTime == null || _articlesCache == null) return false;
+    return DateTime.now().difference(_cacheTime!) < _cacheDuration;
+  }
+
+  // ============ 公共 API ============
+
+  /// 获取所有分类文章（平铺列表，带缓存）
+  static Future<List<UnifiedArticle>> getAllCategorizedArticles({
+    bool validateFiles = true,
+    bool forceRefresh = false,
+  }) async {
+    if (!forceRefresh && _isCacheValid) {
+      return List.from(_articlesCache!);
+    }
 
     try {
-      final response = await http.get(url, headers: _headers);
-      dev.log('响应状态码: ${response.statusCode}');
-      if (response.statusCode == 200) {
-        final List<dynamic> items = json.decode(response.body);
-        dev.log('成功获取到 ${items.length} 个文件');
-        final articles = items
-            .where((item) => item['name'].toString().endsWith('.md'))
-            .map((item) {
-              final name = _formatArticleName(item['name']);
-              final itemPath = item['path'];
-              return UnifiedArticle(
-                name: name,
-                title: name,
-                path: itemPath,
-                downloadUrl: item['download_url'],
-                sha: item['sha'],
-                size: item['size'],
-                type: item['type'],
-                description: name,
-                date: DateTime.now().toIso8601String(),
-                category: '',
-                imageUrl: 'https://picsum.photos/800/400',
-                slug: itemPath.replaceAll('.md', '').replaceAll('/', '-'),
-                commitDate: DateTime.now().toIso8601String(),
-              );
-            })
-            .toList()
-          ..sort((a, b) => b.name.compareTo(a.name));
-        dev.log('过滤后的 Markdown 文章数量: ${articles.length}');
-        return articles;
+      // 获取 contents.md
+      final contents = await _getContentsMarkdown(forceRefresh: forceRefresh);
+
+      // 如果需要验证文件，获取文件列表
+      Set<String>? existingFiles;
+      if (validateFiles) {
+        existingFiles = await _getExistingFiles(forceRefresh: forceRefresh);
       }
-      dev.log('请求失败，响应内容: ${response.body}', error: response.statusCode);
-      throw Exception('Failed to load article list: ${response.statusCode}');
+
+      final categoriesMap = _parseCategories(contents);
+
+      final List<UnifiedArticle> result = [];
+      for (final entry in categoriesMap.entries) {
+        for (final title in entry.value) {
+          final cleanTitle = title.trim();
+          if (validateFiles && existingFiles != null && !existingFiles.contains(cleanTitle)) {
+            continue;
+          }
+          result.add(_createArticle(cleanTitle, entry.key));
+        }
+      }
+
+      _articlesCache = result;
+      _cacheTime = DateTime.now();
+      return List.from(result);
     } catch (e) {
-      dev.log('请求发生错误', error: e);
+      dev.log('获取所有分类文章失败', name: 'UnifiedArticleService', error: e);
       rethrow;
     }
   }
 
-  static String _formatArticleName(String fileName) {
-    String name = fileName.replaceAll('.md', '');
-    name = name.replaceAll(RegExp(r'[-_]'), ' ');
-    return name.split(' ').map((word) => word.isEmpty ? '' : word[0].toUpperCase() + word.substring(1)).join(' ');
+  /// 获取分类文章列表（按分类分组，带缓存）
+  static Future<List<ArticleCategory>> getCategorizedArticles({
+    bool validateFiles = true,
+    bool forceRefresh = false,
+  }) async {
+    final articles = await getAllCategorizedArticles(
+      validateFiles: validateFiles,
+      forceRefresh: forceRefresh,
+    );
+
+    final Map<String, List<UnifiedArticle>> grouped = {};
+    for (final article in articles) {
+      grouped.putIfAbsent(article.category, () => []).add(article);
+    }
+
+    return grouped.entries
+        .map((e) => ArticleCategory(name: e.key, articles: e.value))
+        .toList();
+  }
+
+  /// 获取文章详情（内容、摘要、commit信息）
+  static Future<UnifiedArticle> getArticleDetails(UnifiedArticle article) async {
+    // 如果已经有详情，直接返回
+    if (article.content.isNotEmpty) return article;
+
+    try {
+      // 并行请求内容和 commit 信息
+      final results = await Future.wait([
+        getMarkdownContent(owner, repo, article.path),
+        getFileCommitInfo(owner, repo, article.path),
+      ]);
+
+      final content = results[0] as String;
+      final commitInfo = results[1] as Map<String, dynamic>?;
+
+      if (content.isEmpty) return article;
+
+      final rawImageUrl = _extractImageFromContent(content);
+      final excerpt = _extractExcerpt(content);
+
+      // 转换图片URL为完整的下载链接
+      String? imageUrl;
+      if (rawImageUrl != null && rawImageUrl.isNotEmpty) {
+        imageUrl = await _resolveImageUrl(rawImageUrl, article.path);
+      }
+
+      final updatedArticle = UnifiedArticle(
+        name: article.name,
+        title: article.title,
+        path: article.path,
+        downloadUrl: article.downloadUrl,
+        sha: article.sha,
+        size: article.size,
+        type: article.type,
+        // 使用真实的 commit 时间
+        commitDate: commitInfo?['date'] ?? '',
+        publishDate: commitInfo?['date'] != null
+            ? DateTime.tryParse(commitInfo!['date'])
+            : null,
+        imageUrl: imageUrl ?? article.imageUrl,
+        category: article.category,
+        categories: article.categories,
+        description: excerpt,
+        excerpt: excerpt,
+        content: content,
+        author: commitInfo?['author'] ?? '',
+        date: article.date,
+        slug: article.slug,
+        tags: article.tags,
+      );
+
+      // 更新缓存中的文章
+      _updateCachedArticle(updatedArticle);
+      return updatedArticle;
+    } catch (e) {
+      dev.log('获取文章详情失败', name: 'UnifiedArticleService', error: e);
+      return article;
+    }
   }
 
   /// 获取文章内容
   static Future<String> getMarkdownContent(String owner, String repo, String path) async {
     try {
       final apiUrl = Uri.parse('$_baseUrl/api/contents/$path?owner=$owner&repo=$repo');
-      print('🔍 [UnifiedArticleService] 开始获取文件内容');
-      print('📝 [UnifiedArticleService] 仓库: $owner/$repo');
-      print('📝 [UnifiedArticleService] 路径: $path');
-      print('🔗 [UnifiedArticleService] API URL: $apiUrl');
       final response = await http.get(apiUrl, headers: _headers);
       if (response.statusCode == 200) {
         final Map<String, dynamic> data = json.decode(response.body);
@@ -88,32 +165,16 @@ class UnifiedArticleService {
           throw Exception('响应中缺少文件内容');
         }
         final rawContent = data['content'] as String;
-        final cleanBase64 = rawContent.replaceAll('\n', '').replaceAll('\r', '').replaceAll(' ', '');
-        try {
-          final decoded = base64.decode(cleanBase64);
-          final content = utf8.decode(decoded);
-          final tempContent = content.replaceAllMapped(
-            RegExp(r'(?<!`)`(?!`)'), // 匹配规则：前后无连续反引号的单个 `
-                (match) => '&&',
-          )
-          //     .replaceAllMapped(
-          //   RegExp(r'(?<!-) ```(?!\n)'), // 匹配规则：前面无减号且后面无换行的三个反引号
-          //       (match) => '- ```',
-          // ).replaceAll('```', '`')
-          .replaceAll('**', '&&');
-          print('tempContent $tempContent');
-          return tempContent;
-        } catch (e) {
-          rethrow;
-        }
-      } else {
-        throw Exception('获取文件内容失败: ${response.statusCode}');
+        final cleanBase64 = rawContent.replaceAll(RegExp(r'[\n\r ]'), '');
+        return utf8.decode(base64.decode(cleanBase64));
       }
+      throw Exception('获取文件内容失败: ${response.statusCode}');
     } catch (e) {
       throw Exception('加载内容错误: $e');
     }
   }
 
+  /// 获取图片下载链接
   static Future<String> getImageContent(String fileName) async {
     final url = Uri.parse('$_baseUrl/api/contents/$fileName?owner=$owner&repo=$repo');
     final response = await http.get(url, headers: _headers);
@@ -124,6 +185,7 @@ class UnifiedArticleService {
     throw Exception('Failed to load image: ${response.statusCode}');
   }
 
+  /// 获取文件 commit 信息
   static Future<Map<String, dynamic>?> getFileCommitInfo(String owner, String repo, String path) async {
     try {
       final url = Uri.parse('$_baseUrl/api/commits/$path?owner=$owner&repo=$repo');
@@ -141,35 +203,64 @@ class UnifiedArticleService {
       }
       return null;
     } catch (e) {
-      dev.log('获取提交信息失败', name: 'UnifiedArticleService', error: e);
       return null;
     }
   }
 
-  // ================== 分类文章部分 ==================
-  static final List<String> _skipCategories = [
-    '个人', '生活', '日记', '随笔', '第一次见家长', '贷款', '目标',
-  ];
+  // ============ 私有方法 ============
 
-  static bool _shouldSkipCategory(String category) {
-    return _skipCategories.any((skipCategory) => category.contains(skipCategory));
+  static Future<String> _getContentsMarkdown({bool forceRefresh = false}) async {
+    if (!forceRefresh && _contentsCache != null) {
+      return _contentsCache!;
+    }
+    _contentsCache = await getMarkdownContent(owner, repo, contentsPath);
+    return _contentsCache!;
   }
 
-  static Future<Map<String, List<String>>> fetchCategories() async {
+  static Future<Set<String>> _getExistingFiles({bool forceRefresh = false}) async {
+    if (!forceRefresh && _existingFilesCache != null) {
+      return _existingFilesCache!;
+    }
+
     try {
-      print('开始获取分类信息');
-      print('请求路径: $contentsPath');
-      final content = await getMarkdownContent(owner, repo, contentsPath);
-      if (content.isEmpty) {
-        throw Exception('获取分类信息失败: 内容为空');
+      final url = Uri.parse('$_baseUrl/api/contents/pages?owner=$owner&repo=$repo');
+      final response = await http.get(url, headers: _headers);
+      if (response.statusCode == 200) {
+        final List<dynamic> items = json.decode(response.body);
+        _existingFilesCache = items
+            .where((item) => item['type'] == 'file' && item['name'].toString().endsWith('.md'))
+            .map((item) => item['name'].toString().replaceAll('.md', ''))
+            .toSet();
+        return _existingFilesCache!;
       }
-      final categories = _parseCategories(content);
-      return categories;
-    } catch (e, stack) {
-      print('获取分类信息失败');
-      print('错误: $e');
-      print('堆栈: $stack');
-      rethrow;
+      return {};
+    } catch (e) {
+      dev.log('获取 pages 目录异常', name: 'UnifiedArticleService', error: e);
+      return {};
+    }
+  }
+
+  static UnifiedArticle _createArticle(String title, String categoryName) {
+    final path = 'pages/$title.md';
+    return UnifiedArticle(
+      name: title,
+      title: title,
+      path: path,
+      downloadUrl: path,
+      // 不设置假时间，留空表示未加载
+      commitDate: '',
+      imageUrl: 'https://picsum.photos/800/400',
+      category: categoryName,
+      categories: [categoryName],
+      slug: path.replaceAll('.md', '').replaceAll('/', '-'),
+    );
+  }
+
+  static void _updateCachedArticle(UnifiedArticle article) {
+    if (_articlesCache == null) return;
+    final index = _articlesCache!.indexWhere((a) => a.path == article.path);
+    if (index != -1) {
+      _articlesCache![index] = article;
     }
   }
 
@@ -177,30 +268,37 @@ class UnifiedArticleService {
     final Map<String, List<String>> categories = {};
     String currentCategory = '';
     int currentIndentLevel = 0;
-    final lines = markdown.split('\n');
-    for (var i = 0; i < lines.length; i++) {
-      var line = lines[i];
-      int indentLevel = line.indexOf(line.trim());
+    bool insideMillions = false;
+    int millionsIndent = -1;
+
+    for (var line in markdown.split('\n')) {
+      int indentLevel = line.length - line.trimLeft().length;
       line = line.trim();
       if (line.isEmpty) continue;
-      if (line.contains('collapsed::') || line.startsWith('- **')) continue;
-      if (indentLevel == 1 && line.startsWith('- [[')) {
+
+      if (line.contains('**^^Millions of knowledge^^**')) {
+        insideMillions = true;
+        millionsIndent = indentLevel;
+        continue;
+      }
+
+      if (insideMillions && indentLevel <= millionsIndent && line.startsWith('-')) {
+        if (!line.startsWith('- [[') || line.contains('个人')) break;
+      }
+
+      if (!insideMillions) continue;
+      if (line.contains('collapsed::')) continue;
+
+      if (indentLevel == millionsIndent + 1 && line.startsWith('- [[')) {
         final match = RegExp(r'\[\[(.*?)\]\]').firstMatch(line);
         if (match != null) {
-          currentCategory = match.group(1)!;
-          if (_shouldSkipCategory(currentCategory)) {
-            currentCategory = '';
-            continue;
-          }
-          if (!categories.containsKey(currentCategory)) {
-            categories[currentCategory] = [];
-          }
+          currentCategory = match.group(1)!.trim();
+          categories.putIfAbsent(currentCategory, () => []);
           currentIndentLevel = indentLevel;
         }
       } else if (line.contains('[[') && currentCategory.isNotEmpty && indentLevel > currentIndentLevel) {
-        final matches = RegExp(r'\[\[(.*?)\]\]').allMatches(line);
-        for (final match in matches) {
-          final title = match.group(1)!;
+        for (final match in RegExp(r'\[\[(.*?)\]\]').allMatches(line)) {
+          final title = match.group(1)!.trim();
           if (!title.contains('http') && !title.startsWith('((') && !categories[currentCategory]!.contains(title)) {
             categories[currentCategory]!.add(title);
           }
@@ -210,144 +308,73 @@ class UnifiedArticleService {
     return categories;
   }
 
-  static Future<List<ArticleCategory>> getCategorizedArticles() async {
-    try {
-      final contents = await getMarkdownContent(owner, repo, contentsPath);
-      final categoriesMap = _parseCategories(contents);
-      final result = categoriesMap.entries.map((entry) {
-        final categoryName = entry.key;
-        final articleTitles = entry.value;
-        final articles = articleTitles.map((title) {
-          final path = 'pages/$title.md';
-          // 直接创建 UnifiedArticle
-          final unifiedArticle = UnifiedArticle(
-            name: title,
-            title: title,
-            path: path,
-            downloadUrl: path,
-            commitDate: DateTime.now().toIso8601String(),
-            imageUrl: 'https://picsum.photos/800/400',
-            category: categoryName, // 设置分类
-            categories: [categoryName], // 同时设置categories数组
-            slug: path.replaceAll('.md', '').replaceAll('/', '-'),
-          );
-          return unifiedArticle;
-        }).toList();
-        return ArticleCategory(
-          name: categoryName,
-          articles: articles,
-        );
-      }).toList();
-      return result;
-    } catch (e, stack) {
-      print('获取分类文章失败');
-      print('错误: $e');
-      print('堆栈: $stack');
-      rethrow;
-    }
-  }
-
-  /// 获取所有分类文章，直接返回 UnifiedArticle 列表
-  static Future<List<UnifiedArticle>> getAllCategorizedArticles() async {
-    try {
-      final contents = await getMarkdownContent(owner, repo, contentsPath);
-      final categoriesMap = _parseCategories(contents);
-      
-      final List<UnifiedArticle> result = [];
-      
-      for (final entry in categoriesMap.entries) {
-        final categoryName = entry.key;
-        final articleTitles = entry.value;
-        
-        for (final title in articleTitles) {
-          final path = 'pages/$title.md';
-          final unifiedArticle = UnifiedArticle(
-            name: title,
-            title: title,
-            path: path,
-            downloadUrl: path,
-            commitDate: DateTime.now().toIso8601String(),
-            imageUrl: 'https://picsum.photos/800/400',
-            category: categoryName,
-            categories: [categoryName],
-            slug: path.replaceAll('.md', '').replaceAll('/', '-'),
-          );
-          result.add(unifiedArticle);
-        }
-      }
-      
-      return result;
-    } catch (e, stack) {
-      print('获取所有分类文章失败');
-      print('错误: $e');
-      print('堆栈: $stack');
-      rethrow;
-    }
-  }
-
-  static Future<UnifiedArticle> getArticleDetails(UnifiedArticle article) async {
-    try {
-      final content = await getMarkdownContent(owner, repo, article.path);
-      if (content.isEmpty) {
-        return article;
-      }
-      final commitInfo = await getFileCommitInfo(owner, repo, article.path);
-      final imageUrl = _extractImageFromContent(content);
-      
-      // 提取文章摘要
-      final excerpt = _extractExcerpt(content);
-      
-      return UnifiedArticle(
-        name: article.name,
-        title: article.title,
-        path: article.path,
-        downloadUrl: article.downloadUrl,
-        sha: article.sha,
-        size: article.size,
-        type: article.type,
-        commitDate: commitInfo != null ? commitInfo['date'] ?? article.commitDate : article.commitDate,
-        imageUrl: imageUrl ?? article.imageUrl,
-        category: article.category,
-        categories: article.categories,
-        description: excerpt, // 使用摘要作为描述
-        excerpt: excerpt,
-        content: content, // 保存完整内容
-        author: commitInfo != null ? commitInfo['author'] ?? '' : '',
-        date: article.date,
-        slug: article.slug,
-        tags: article.tags,
-      );
-    } catch (e) {
-      print('获取文章详情失败：$e');
-      return article;
-    }
-  }
-
   static String? _extractImageFromContent(String content) {
-    final imageRegex = RegExp(r'!\[.*?\]\((.*?)\)');
-    final match = imageRegex.firstMatch(content);
-    if (match != null) {
-      return match.group(1);
-    }
-    return null;
+    final match = RegExp(r'!\[.*?\]\((.*?)\)').firstMatch(content);
+    return match?.group(1);
   }
-  
+
+  /// 解析图片URL，将相对路径转换为完整的下载链接
+  static Future<String?> _resolveImageUrl(String imageUrl, String articlePath) async {
+    try {
+      // 如果已经是完整URL，直接返回
+      if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
+        return imageUrl;
+      }
+
+      // 获取文章所在目录
+      final articleDir = articlePath.contains('/')
+          ? articlePath.substring(0, articlePath.lastIndexOf('/'))
+          : '';
+
+      // 处理相对路径
+      String resolvedPath = imageUrl;
+
+      // 处理 ../ 路径
+      if (imageUrl.startsWith('../')) {
+        final parts = articleDir.split('/');
+        var imgPath = imageUrl;
+        while (imgPath.startsWith('../') && parts.isNotEmpty) {
+          parts.removeLast();
+          imgPath = imgPath.substring(3);
+        }
+        resolvedPath = parts.isEmpty ? imgPath : '${parts.join('/')}/$imgPath';
+      }
+      // 处理 ./ 路径
+      else if (imageUrl.startsWith('./')) {
+        resolvedPath = articleDir.isEmpty
+            ? imageUrl.substring(2)
+            : '$articleDir/${imageUrl.substring(2)}';
+      }
+      // 处理不带前缀的相对路径
+      else if (!imageUrl.startsWith('/')) {
+        resolvedPath = articleDir.isEmpty ? imageUrl : '$articleDir/$imageUrl';
+      }
+
+      // 清理路径中的多余斜杠
+      resolvedPath = resolvedPath.replaceAll('//', '/');
+      if (resolvedPath.startsWith('/')) {
+        resolvedPath = resolvedPath.substring(1);
+      }
+
+      // 获取图片的下载链接
+      final downloadUrl = await getImageContent(resolvedPath);
+      return downloadUrl;
+    } catch (e) {
+      dev.log('解析图片URL失败: $imageUrl', name: 'UnifiedArticleService', error: e);
+      return null;
+    }
+  }
+
   static String _extractExcerpt(String content) {
-    // 去除 Markdown 标记
     final plainText = content
-        .replaceAll(RegExp(r'#+\s+'), '')  // 移除标题
-        .replaceAll(RegExp(r'!\[.*?\]\(.*?\)'), '')  // 移除图片
-        .replaceAll(RegExp(r'\[([^\]]*)\]\(.*?\)'), r'\$1')  // 替换链接为文本
-        .replaceAll(RegExp(r'`{1,3}.*?`{1,3}'), '')  // 移除代码
-        .replaceAll(RegExp(r'[*_]{1,2}(.*?)[*_]{1,2}'), r'\$1')  // 移除强调标记
+        .replaceAll(RegExp(r'#+\s+'), '')
+        .replaceAll(RegExp(r'!\[.*?\]\(.*?\)'), '')
+        .replaceAll(RegExp(r'\[([^\]]*)\]\(.*?\)'), r'$1')
+        .replaceAll(RegExp(r'`{1,3}[^`]*`{1,3}'), '')
+        .replaceAll(RegExp(r'[*_]{1,2}([^*_]*)[*_]{1,2}'), r'$1')
+        .replaceAll(RegExp(r'\n+'), ' ')
         .trim();
-    
-    // 获取前200个字符作为摘要
-    final maxLength = 200;
-    if (plainText.length <= maxLength) {
-      return plainText;
-    }
-    
-    return '${plainText.substring(0, maxLength)}...';
+
+    return plainText.length <= 200 ? plainText : '${plainText.substring(0, 200)}...';
   }
-} 
+}

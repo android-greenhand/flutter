@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import '../services/unified_article_service.dart';
 import '../models/unified_article.dart';
 import '../widgets/page_container.dart';
-// import 'markdown_viewer_page.dart';
 import 'package:go_router/go_router.dart';
 import 'dart:developer' as dev;
 
@@ -28,20 +27,14 @@ class _ArticleListPageState extends State<ArticleListPage> {
 
   Future<void> _loadArticles() async {
     try {
-      dev.log('开始加载文章数据...', name: 'ArticleListPage');
-      final articles = await UnifiedArticleService.getAllCategorizedArticles();
-      
+      final articles = await UnifiedArticleService.getAllCategorizedArticles(validateFiles: true);
+
       if (mounted) {
-        dev.log('获取到文章列表: ${articles.length} 篇', name: 'ArticleListPage');
-        
-        // 提取所有分类
-        final categorySet = <String>{};
-        for (final article in articles) {
-          if (article.category.isNotEmpty) {
-            categorySet.add(article.category);
-          }
-        }
-        
+        final categorySet = articles
+            .where((a) => a.category.isNotEmpty)
+            .map((a) => a.category)
+            .toSet();
+
         setState(() {
           _articles = articles;
           _categories = categorySet.toList();
@@ -49,7 +42,7 @@ class _ArticleListPageState extends State<ArticleListPage> {
         });
       }
     } catch (e) {
-      dev.log('加载文章列表失败: $e', name: 'ArticleListPage');
+      dev.log('加载文章列表失败', name: 'ArticleListPage', error: e);
       if (mounted) {
         setState(() {
           _error = e.toString();
@@ -143,24 +136,14 @@ class _ArticleListPageState extends State<ArticleListPage> {
                   FilterChip(
                     label: const Text('全部'),
                     selected: _selectedCategory == '全部',
-                    onSelected: (selected) {
-                      setState(() {
-                        _selectedCategory = '全部';
-                        dev.log('选择分类: 全部', name: 'ArticleListPage');
-                      });
-                    },
+                    onSelected: (_) => setState(() => _selectedCategory = '全部'),
                   ),
                   ..._categories.map((category) => Padding(
                     padding: const EdgeInsets.only(left: 8.0),
                     child: FilterChip(
                       label: Text(category),
                       selected: _selectedCategory == category,
-                      onSelected: (selected) {
-                        setState(() {
-                          _selectedCategory = category;
-                          dev.log('选择分类: $category', name: 'ArticleListPage');
-                        });
-                      },
+                      onSelected: (_) => setState(() => _selectedCategory = category),
                     ),
                   )),
                 ],

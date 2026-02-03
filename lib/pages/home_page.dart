@@ -1,14 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:responsive_framework/responsive_framework.dart';
 import 'package:go_router/go_router.dart';
-import '../data/sample_posts.dart';
 import '../widgets/blog_card.dart';
 import '../widgets/page_container.dart';
 import '../services/unified_article_service.dart';
 import '../models/unified_article.dart';
 import 'dart:developer' as dev;
 import 'dart:math' show min;
-import 'dart:math';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -55,13 +53,9 @@ class _HomePageState extends State<HomePage>
 
   Future<void> _loadData() async {
     try {
-      dev.log('开始加载数据...', name: 'HomePage');
-      // 直接获取分类文章作为 UnifiedArticle
-      final allArticles =
-          await UnifiedArticleService.getAllCategorizedArticles();
+      final allArticles = await UnifiedArticleService.getAllCategorizedArticles(validateFiles: true);
 
       if (allArticles.isEmpty) {
-        dev.log('警告：没有获取到任何分类文章', name: 'HomePage');
         setState(() {
           _isLoadingCategories = false;
           _isLoadingArticles = false;
@@ -69,65 +63,53 @@ class _HomePageState extends State<HomePage>
         return;
       }
 
-      dev.log('成功获取 ${allArticles.length} 篇文章', name: 'HomePage');
-
       // 提取所有分类
-      final categorySet = <String>{};
-      for (final article in allArticles) {
-        if (article.category.isNotEmpty) {
-          categorySet.add(article.category);
-        }
-      }
+      final categorySet = allArticles
+          .where((a) => a.category.isNotEmpty)
+          .map((a) => a.category)
+          .toSet();
 
       setState(() {
         _categories = ['全部', ...categorySet];
         _articles = allArticles;
         _isLoadingCategories = false;
         _isLoadingArticles = false;
-        dev.log(
-          '数据加载完成: ${_categories.length} 个分类, ${_articles.length} 篇文章',
-          name: 'HomePage',
-        );
       });
 
-      for (int index = 0; index < _categories.length; index++) {
-        final articles =
-            _articles
-                .where((article) => article.category == _categories[index])
-                .toList();
-
-        for (int i = 0; i < min(articles.length, 2); i++) {
-          final cArticle = articles[i];
-          final realIndex = _articles.indexOf(cArticle);
-
-          try {
-            // 获取文章详细信息
-            final detailedArticle =
-                await UnifiedArticleService.getArticleDetails(cArticle);
-
-            setState(() {
-              _articles[realIndex] = detailedArticle;
-            });
-          } catch (e) {
-            dev.log(
-              '获取文章详细信息失败: ${cArticle.title}',
-              name: 'HomePage',
-              error: e,
-            );
-            // 如果获取详细信息失败，保持使用默认值
-          }
-        }
+      // 异步加载前几篇文章的详细信息（用于首页展示）
+      _loadArticleDetails();
+    } catch (e) {
+      dev.log('数据加载失败', name: 'HomePage', error: e);
+      if (mounted) {
+        setState(() {
+          _isLoadingCategories = false;
+          _isLoadingArticles = false;
+        });
       }
-    } catch (e, stack) {
-      dev.log('数据加载失败', name: 'HomePage', error: e, stackTrace: stack);
-      setState(() {
-        _isLoadingCategories = false;
-        _isLoadingArticles = false;
-      });
     }
   }
 
-  // 添加一个方法来获取当前分类的文章
+  /// 异步加载文章详细信息（摘要、图片等）
+  Future<void> _loadArticleDetails() async {
+    // 只加载前4篇文章的详情用于首页展示
+    final articlesToLoad = _articles.take(4).toList();
+
+    for (int i = 0; i < articlesToLoad.length; i++) {
+      if (!mounted) return;
+      try {
+        final detailedArticle = await UnifiedArticleService.getArticleDetails(articlesToLoad[i]);
+        if (mounted) {
+          setState(() {
+            _articles[i] = detailedArticle;
+          });
+        }
+      } catch (e) {
+        dev.log('获取文章详情失败: ${articlesToLoad[i].title}', name: 'HomePage', error: e);
+      }
+    }
+  }
+
+  /// 获取当前分类的文章
   List<UnifiedArticle> _getFilteredArticles() {
     if (_selectedCategory == '全部') {
       return _articles;
@@ -348,87 +330,10 @@ class _HomePageState extends State<HomePage>
                       return FilterChip(
                         label: Text(category),
                         selected: _selectedCategory == category,
-                        onSelected: (selected) {
-                          setState(() {
-                            _selectedCategory = category;
-                            dev.log('选择分类: $category', name: 'HomePage');
-                          });
-                        },
+                        onSelected: (_) => setState(() => _selectedCategory = category),
                       );
                     }).toList(),
               ),
-    );
-  }
-
-  Widget _buildRecommendedCard(BuildContext context) {
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      child: Card(
-        elevation: 2,
-        shadowColor: Theme.of(context).colorScheme.shadow.withOpacity(0.2),
-        child: InkWell(
-          onTap: () => context.go('/article/page'),
-          borderRadius: BorderRadius.circular(12),
-          child: Container(
-            padding: const EdgeInsets.all(20),
-            child: Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.primaryContainer,
-                    borderRadius: BorderRadius.circular(12),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Theme.of(
-                          context,
-                        ).colorScheme.primary.withOpacity(0.1),
-                        blurRadius: 8,
-                        offset: const Offset(0, 4),
-                      ),
-                    ],
-                  ),
-                  child: Icon(
-                    Icons.science,
-                    size: 28,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-                ),
-                const SizedBox(width: 20),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Gson原理',
-                        style: Theme.of(
-                          context,
-                        ).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.bold,
-                          letterSpacing: -0.5,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        '深入解析 Gson 的工作原理',
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                          height: 1.4,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Icon(
-                  Icons.arrow_forward_ios,
-                  size: 16,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
     );
   }
 
@@ -575,7 +480,7 @@ class _HomePageState extends State<HomePage>
                           ),
                         );
                       },
-                      child: BlogCard(post: article),
+                      child: BlogCard(key: ValueKey(article.path), post: article),
                     );
                   },
                 ),

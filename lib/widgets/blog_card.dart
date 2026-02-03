@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../models/unified_article.dart';
+import '../services/unified_article_service.dart';
 
 class BlogCard extends StatefulWidget {
   final UnifiedArticle post;
@@ -15,11 +16,13 @@ class _BlogCardState extends State<BlogCard> with SingleTickerProviderStateMixin
   late final AnimationController _hoverController;
   late final Animation<double> _scaleAnimation;
   late final Animation<double> _elevationAnimation;
-  bool _isHovered = false;
+  late UnifiedArticle _article;
+  bool _isLoadingDetails = false;
 
   @override
   void initState() {
     super.initState();
+    _article = widget.post;
     _hoverController = AnimationController(
       duration: const Duration(milliseconds: 200),
       vsync: this,
@@ -38,6 +41,34 @@ class _BlogCardState extends State<BlogCard> with SingleTickerProviderStateMixin
       parent: _hoverController,
       curve: Curves.easeOutCubic,
     ));
+
+    // 懒加载文章详情（包括真实图片）
+    _loadArticleDetails();
+  }
+
+  Future<void> _loadArticleDetails() async {
+    // 如果已有内容，说明已经加载过
+    if (_article.content.isNotEmpty) return;
+
+    setState(() {
+      _isLoadingDetails = true;
+    });
+
+    try {
+      final details = await UnifiedArticleService.getArticleDetails(_article);
+      if (mounted) {
+        setState(() {
+          _article = details;
+          _isLoadingDetails = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isLoadingDetails = false;
+        });
+      }
+    }
   }
 
   @override
@@ -47,8 +78,11 @@ class _BlogCardState extends State<BlogCard> with SingleTickerProviderStateMixin
   }
 
   Widget _buildImage(BuildContext context) {
+    final imageUrl = _article.imageUrl;
+    final isPlaceholder = imageUrl.contains('picsum.photos');
+
     return Hero(
-      tag: 'post-image-${widget.post.slug}',
+      tag: 'post-image-${_article.slug}',
       flightShuttleBuilder: (
         BuildContext flightContext,
         Animation<double> animation,
@@ -59,7 +93,7 @@ class _BlogCardState extends State<BlogCard> with SingleTickerProviderStateMixin
         return AnimatedBuilder(
           animation: animation,
           child: Image.network(
-            widget.post.imageUrl,
+            imageUrl,
             fit: BoxFit.cover,
           ),
           builder: (context, child) {
@@ -86,74 +120,112 @@ class _BlogCardState extends State<BlogCard> with SingleTickerProviderStateMixin
           borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
         ),
         clipBehavior: Clip.antiAlias,
-        child: Image.network(
-          widget.post.imageUrl,
-          fit: BoxFit.cover,
-          errorBuilder: (context, error, stackTrace) {
-            return Container(
-              color: Theme.of(context).colorScheme.surfaceVariant,
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(
-                    Icons.image_outlined,
-                    size: 48,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    '图片加载失败',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                ],
+        child: _isLoadingDetails && isPlaceholder
+            ? _buildLoadingPlaceholder(context)
+            : Image.network(
+                imageUrl,
+                fit: BoxFit.cover,
+                errorBuilder: (context, error, stackTrace) {
+                  return _buildErrorPlaceholder(context);
+                },
+                loadingBuilder: (context, child, loadingProgress) {
+                  if (loadingProgress == null) {
+                    return AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 300),
+                      child: child,
+                    );
+                  }
+                  return _buildImageLoadingIndicator(context, loadingProgress);
+                },
               ),
-            );
-          },
-          loadingBuilder: (context, child, loadingProgress) {
-            if (loadingProgress == null) {
-              return AnimatedSwitcher(
-                duration: const Duration(milliseconds: 300),
-                child: child,
-              );
-            }
-            return Container(
-              color: Theme.of(context).colorScheme.surfaceVariant,
-              child: Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    CircularProgressIndicator(
-                      value: loadingProgress.expectedTotalBytes != null
-                          ? loadingProgress.cumulativeBytesLoaded / loadingProgress.expectedTotalBytes!
-                          : null,
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
-                    if (loadingProgress.expectedTotalBytes != null) ...[
-                      const SizedBox(height: 8),
-                      Text(
-                        '${((loadingProgress.cumulativeBytesLoaded / loadingProgress.expectedTotalBytes!) * 100).toStringAsFixed(0)}%',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ],
+      ),
+    );
+  }
+
+  Widget _buildLoadingPlaceholder(BuildContext context) {
+    return Container(
+      color: Theme.of(context).colorScheme.surfaceVariant,
+      child: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            SizedBox(
+              width: 24,
+              height: 24,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '加载中...',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildErrorPlaceholder(BuildContext context) {
+    return Container(
+      color: Theme.of(context).colorScheme.surfaceVariant,
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.image_outlined,
+            size: 48,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            '图片加载失败',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildImageLoadingIndicator(BuildContext context, ImageChunkEvent loadingProgress) {
+    return Container(
+      color: Theme.of(context).colorScheme.surfaceVariant,
+      child: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            CircularProgressIndicator(
+              value: loadingProgress.expectedTotalBytes != null
+                  ? loadingProgress.cumulativeBytesLoaded / loadingProgress.expectedTotalBytes!
+                  : null,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+            if (loadingProgress.expectedTotalBytes != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                '${((loadingProgress.cumulativeBytesLoaded / loadingProgress.expectedTotalBytes!) * 100).toStringAsFixed(0)}%',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
               ),
-            );
-          },
+            ],
+          ],
         ),
       ),
     );
   }
 
   Widget _buildTags(BuildContext context) {
-    final tags = widget.post.tags.isNotEmpty 
-        ? widget.post.tags 
-        : (widget.post.categories.isNotEmpty ? widget.post.categories : [widget.post.category]);
-    
+    final tags = _article.tags.isNotEmpty
+        ? _article.tags
+        : (_article.categories.isNotEmpty ? _article.categories : [_article.category]);
+
     return Wrap(
       spacing: 8,
       runSpacing: 8,
@@ -202,14 +274,8 @@ class _BlogCardState extends State<BlogCard> with SingleTickerProviderStateMixin
   @override
   Widget build(BuildContext context) {
     return MouseRegion(
-      onEnter: (_) {
-        setState(() => _isHovered = true);
-        _hoverController.forward();
-      },
-      onExit: (_) {
-        setState(() => _isHovered = false);
-        _hoverController.reverse();
-      },
+      onEnter: (_) => _hoverController.forward(),
+      onExit: (_) => _hoverController.reverse(),
       child: AnimatedBuilder(
         animation: _hoverController,
         builder: (context, child) {
@@ -227,8 +293,8 @@ class _BlogCardState extends State<BlogCard> with SingleTickerProviderStateMixin
         },
         child: InkWell(
           onTap: () => context.go('/article/page', extra: {
-            'path': '${widget.post.path}',
-            'name': widget.post.title,
+            'path': '${_article.path}',
+            'name': _article.title,
           }),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -241,7 +307,7 @@ class _BlogCardState extends State<BlogCard> with SingleTickerProviderStateMixin
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        widget.post.title,
+                        _article.title,
                         style: Theme.of(context).textTheme.titleLarge?.copyWith(
                           fontWeight: FontWeight.bold,
                         ),
@@ -250,7 +316,7 @@ class _BlogCardState extends State<BlogCard> with SingleTickerProviderStateMixin
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        widget.post.excerpt.isNotEmpty ? widget.post.excerpt : widget.post.description,
+                        _article.excerpt.isNotEmpty ? _article.excerpt : _article.description,
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                           height: 1.5,
                         ),
@@ -269,7 +335,7 @@ class _BlogCardState extends State<BlogCard> with SingleTickerProviderStateMixin
                           ),
                           const SizedBox(width: 4),
                           Text(
-                            '${widget.post.author.isNotEmpty ? widget.post.author : "未知作者"}',
+                            _article.author.isNotEmpty ? _article.author : "未知作者",
                             style: Theme.of(context).textTheme.bodyMedium,
                           ),
                           const Spacer(),
@@ -280,7 +346,7 @@ class _BlogCardState extends State<BlogCard> with SingleTickerProviderStateMixin
                           ),
                           const SizedBox(width: 4),
                           Text(
-                            _formatDate(widget.post.publishDate ?? (widget.post.commitDate.isNotEmpty ? DateTime.parse(widget.post.commitDate) : DateTime.now())),
+                            _getDateText(),
                             style: Theme.of(context).textTheme.bodyMedium,
                           ),
                         ],
@@ -298,7 +364,21 @@ class _BlogCardState extends State<BlogCard> with SingleTickerProviderStateMixin
     );
   }
 
+  String _getDateText() {
+    // 优先使用 publishDate
+    if (_article.publishDate != null) {
+      return _formatDate(_article.publishDate!);
+    }
+    // 其次尝试解析 commitDate
+    if (_article.commitDate.isNotEmpty) {
+      final date = DateTime.tryParse(_article.commitDate);
+      if (date != null) return _formatDate(date);
+    }
+    // 未加载时显示占位符
+    return '---';
+  }
+
   String _formatDate(DateTime date) {
     return '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
   }
-} 
+}

@@ -24,8 +24,8 @@ class UnifiedArticle {
   
   // 时间和作者信息
   final String date;           // 发布日期字符串
-  final String commitDate;     // 提交日期字符串
-  final DateTime publishDate;  // 发布日期对象
+  final String commitDate;     // 提交日期字符串（空字符串表示未加载）
+  final DateTime? publishDate; // 发布日期对象（null 表示未加载）
   final String author;         // 作者
   
   // 媒体信息
@@ -48,10 +48,10 @@ class UnifiedArticle {
     this.type = 'file',
     this.date = '',
     this.commitDate = '',
-    DateTime? publishDate,
+    this.publishDate,
     this.author = '',
     this.imageUrl = 'https://picsum.photos/800/400',
-  }) : publishDate = publishDate ?? DateTime.now();
+  });
 
   /// 从 JSON 创建 UnifiedArticle 对象
   factory UnifiedArticle.fromJson(Map<String, dynamic> json) {
@@ -97,7 +97,7 @@ class UnifiedArticle {
       'type': type,
       'date': date,
       'commitDate': commitDate,
-      'publishDate': publishDate.toIso8601String(),
+      'publishDate': publishDate?.toIso8601String(),
       'author': author,
       'imageUrl': imageUrl,
     };
