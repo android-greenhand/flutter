@@ -6,7 +6,8 @@ import '../widgets/page_container.dart';
 import '../services/unified_article_service.dart';
 import '../models/unified_article.dart';
 import 'dart:developer' as dev;
-import 'dart:math' show min;
+import 'dart:math' show min, Random;
+import 'dart:async';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -27,6 +28,11 @@ class _HomePageState extends State<HomePage>
   bool _isLoadingCategories = true;
   List<UnifiedArticle> _articles = [];
   bool _isLoadingArticles = true;
+
+  // 推荐阅读轮换相关
+  UnifiedArticle? _recommendedArticle;
+  Timer? _recommendTimer;
+  final Random _random = Random();
 
   @override
   void initState() {
@@ -76,6 +82,9 @@ class _HomePageState extends State<HomePage>
         _isLoadingArticles = false;
       });
 
+      // 启动推荐文章轮换定时器
+      _startRecommendTimer();
+
       // 异步加载前几篇文章的详细信息（用于首页展示）
       _loadArticleDetails();
     } catch (e) {
@@ -119,8 +128,27 @@ class _HomePageState extends State<HomePage>
         .toList();
   }
 
+  /// 随机选择一篇推荐文章
+  void _selectRandomRecommendation() {
+    if (_articles.isEmpty) return;
+    final randomIndex = _random.nextInt(_articles.length);
+    setState(() {
+      _recommendedArticle = _articles[randomIndex];
+    });
+  }
+
+  /// 启动推荐文章轮换定时器
+  void _startRecommendTimer() {
+    _recommendTimer?.cancel();
+    _selectRandomRecommendation();
+    _recommendTimer = Timer.periodic(const Duration(seconds: 8), (_) {
+      _selectRandomRecommendation();
+    });
+  }
+
   @override
   void dispose() {
+    _recommendTimer?.cancel();
     _controller.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -535,75 +563,85 @@ class _HomePageState extends State<HomePage>
                   ),
                   child: FadeTransition(
                     opacity: _fadeAnimation,
-                    child: MouseRegion(
-                      cursor: SystemMouseCursors.click,
-                      child: Card(
-                        elevation: 1,
-                        child: InkWell(
-                          onTap: () => context.go('/article/page'),
-                          borderRadius: BorderRadius.circular(12),
-                          child: Container(
-                            padding: const EdgeInsets.all(16),
-                            child: Row(
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.all(8),
-                                  decoration: BoxDecoration(
-                                    color:
-                                        Theme.of(
-                                          context,
-                                        ).colorScheme.primaryContainer,
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: Icon(
-                                    Icons.science,
-                                    color:
-                                        Theme.of(context).colorScheme.primary,
-                                  ),
+                    child: _recommendedArticle == null
+                        ? const SizedBox.shrink()
+                        : AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 500),
+                            transitionBuilder: (child, animation) {
+                              return FadeTransition(
+                                opacity: animation,
+                                child: SlideTransition(
+                                  position: Tween<Offset>(
+                                    begin: const Offset(0.1, 0),
+                                    end: Offset.zero,
+                                  ).animate(animation),
+                                  child: child,
                                 ),
-                                const SizedBox(width: 16),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        'Gson原理',
-                                        style: Theme.of(
-                                          context,
-                                        ).textTheme.titleMedium?.copyWith(
-                                          fontWeight: FontWeight.bold,
+                              );
+                            },
+                            child: MouseRegion(
+                              key: ValueKey(_recommendedArticle!.path),
+                              cursor: SystemMouseCursors.click,
+                              child: Card(
+                                elevation: 1,
+                                child: InkWell(
+                                  onTap: () => context.go('/article/page', extra: {
+                                    'path': _recommendedArticle!.path,
+                                    'name': _recommendedArticle!.title,
+                                  }),
+                                  borderRadius: BorderRadius.circular(12),
+                                  child: Container(
+                                    padding: const EdgeInsets.all(16),
+                                    child: Row(
+                                      children: [
+                                        Container(
+                                          padding: const EdgeInsets.all(8),
+                                          decoration: BoxDecoration(
+                                            color: Theme.of(context).colorScheme.primaryContainer,
+                                            borderRadius: BorderRadius.circular(8),
+                                          ),
+                                          child: Icon(
+                                            Icons.article_outlined,
+                                            color: Theme.of(context).colorScheme.primary,
+                                          ),
                                         ),
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        '深入解析 Gson 的工作原理',
-                                        style: Theme.of(
-                                          context,
-                                        ).textTheme.bodySmall?.copyWith(
-                                          color:
-                                              Theme.of(
-                                                context,
-                                              ).colorScheme.onSurfaceVariant,
+                                        const SizedBox(width: 16),
+                                        Expanded(
+                                          child: Column(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                _recommendedArticle!.title,
+                                                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                              const SizedBox(height: 4),
+                                              Text(
+                                                _recommendedArticle!.category.isNotEmpty
+                                                    ? _recommendedArticle!.category
+                                                    : '阅读推荐',
+                                                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
                                         ),
-                                      ),
-                                    ],
+                                        Icon(
+                                          Icons.arrow_forward_ios,
+                                          size: 16,
+                                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                        ),
+                                      ],
+                                    ),
                                   ),
                                 ),
-                                Icon(
-                                  Icons.arrow_forward_ios,
-                                  size: 16,
-                                  color:
-                                      Theme.of(
-                                        context,
-                                      ).colorScheme.onSurfaceVariant,
-                                ),
-                              ],
+                              ),
                             ),
                           ),
-                        ),
-                      ),
-                    ),
                   ),
                 ),
               ],
